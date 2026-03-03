@@ -195,17 +195,20 @@ async function runGit(path: string, args: string[]) {
 	return result.stdout;
 }
 
-	async function getCommits(path: string, revision = DEFAULT_BRANCH_VALUE): Promise<Commit[]> {
-		const output = await runGit(path, [
-			"log",
-			revision,
-			"--max-count=100",
-			"--date=unix",
-			"--pretty=format:%H\u001f%an\u001f%ct\u001f%s",
-		]);
+async function getCommits(
+	path: string,
+	revision = DEFAULT_BRANCH_VALUE,
+): Promise<Commit[]> {
+	const output = await runGit(path, [
+		"log",
+		revision,
+		"--max-count=100",
+		"--date=unix",
+		"--pretty=format:%H\u001f%an\u001f%ct\u001f%s",
+	]);
 
-		return output
-			.split("\n")
+	return output
+		.split("\n")
 		.filter(Boolean)
 		.map((line) => {
 			const parts = line.split(UNIT_SEPARATOR);
@@ -220,19 +223,19 @@ async function runGit(path: string, args: string[]) {
 				summary: summaryParts.join(UNIT_SEPARATOR),
 			};
 		})
-			.filter((value): value is Commit => value !== null);
-	}
+		.filter((value): value is Commit => value !== null);
+}
 
-	async function getCurrentBranch(path: string) {
-		const output = await runGit(path, ["rev-parse", "--abbrev-ref", "HEAD"]);
-		const branch = output.trim();
-		return branch === DEFAULT_BRANCH_VALUE ? null : branch;
-	}
+async function getCurrentBranch(path: string) {
+	const output = await runGit(path, ["rev-parse", "--abbrev-ref", "HEAD"]);
+	const branch = output.trim();
+	return branch === DEFAULT_BRANCH_VALUE ? null : branch;
+}
 
-	async function getBranches(path: string): Promise<string[]> {
-		const output = await runGit(path, ["branch", "--format=%(refname:short)"]);
-		return sanitizeBranches(output.split("\n"));
-	}
+async function getBranches(path: string): Promise<string[]> {
+	const output = await runGit(path, ["branch", "--format=%(refname:short)"]);
+	return sanitizeBranches(output.split("\n"));
+}
 
 async function getCommitFiles(
 	path: string,
@@ -355,10 +358,10 @@ function App() {
 				}
 
 				setBranches(normalizedBranches);
-				const effectiveBranch = branchHint
-					&& normalizedBranches.includes(branchHint)
-					? branchHint
-					: normalizedBranches[0];
+				const effectiveBranch =
+					branchHint && normalizedBranches.includes(branchHint)
+						? branchHint
+						: normalizedBranches[0];
 				setSelectedBranch(effectiveBranch);
 
 				const result = await getCommits(selected, effectiveBranch);
@@ -389,7 +392,7 @@ function App() {
 		await loadRepository(selected);
 	}
 
-		async function selectRecentFolder(selected: string) {
+	async function selectRecentFolder(selected: string) {
 		if (selected === OPEN_REPO_VALUE) {
 			await selectFolder();
 			return;
@@ -411,31 +414,31 @@ function App() {
 			return;
 		}
 
-			if (selected !== folder) {
-				await loadRepository(selected);
-			}
+		if (selected !== folder) {
+			await loadRepository(selected);
 		}
+	}
 
-		async function selectBranch(selected: string) {
-			if (!folder || selected === selectedBranch) return;
-			setSelectedBranch(selected);
-			setSelectedCommit(null);
-			setSelectedFile(null);
-			setCommitFiles([]);
-			setDiff("");
-			setError(null);
-			setLoading((state) => ({ ...state, commits: true }));
+	async function selectBranch(selected: string) {
+		if (!folder || selected === selectedBranch) return;
+		setSelectedBranch(selected);
+		setSelectedCommit(null);
+		setSelectedFile(null);
+		setCommitFiles([]);
+		setDiff("");
+		setError(null);
+		setLoading((state) => ({ ...state, commits: true }));
 
-			try {
-				const result = await getCommits(folder, selected);
-				setCommits(result);
-			} catch (e) {
-				setError(String(e));
-				setCommits([]);
-			} finally {
-				setLoading((state) => ({ ...state, commits: false }));
-			}
+		try {
+			const result = await getCommits(folder, selected);
+			setCommits(result);
+		} catch (e) {
+			setError(String(e));
+			setCommits([]);
+		} finally {
+			setLoading((state) => ({ ...state, commits: false }));
 		}
+	}
 
 	async function loadCommitFiles(commit: Commit) {
 		if (!folder) return;
@@ -494,46 +497,46 @@ function App() {
 						</CardDescription>
 					</CardHeader>
 					<CardContent>
-							<div className="grid gap-2 md:grid-cols-2">
-								<Select value={folder ?? ""} onValueChange={selectRecentFolder}>
-									<SelectTrigger className="w-full">
-										<SelectValue placeholder="Open repository" />
-									</SelectTrigger>
-									<SelectContent>
-										<SelectItem value={OPEN_REPO_VALUE}>
-											Open repository...
+						<div className="grid gap-2 md:grid-cols-2">
+							<Select value={folder ?? ""} onValueChange={selectRecentFolder}>
+								<SelectTrigger className="w-full">
+									<SelectValue placeholder="Open repository" />
+								</SelectTrigger>
+								<SelectContent>
+									<SelectItem value={OPEN_REPO_VALUE}>
+										Open repository...
+									</SelectItem>
+									<SelectSeparator />
+									{normalizedRecentRepos.map((repo) => (
+										<SelectItem key={repo} value={repo}>
+											{repo}
 										</SelectItem>
-										<SelectSeparator />
-										{normalizedRecentRepos.map((repo) => (
-											<SelectItem key={repo} value={repo}>
-												{repo}
-											</SelectItem>
-										))}
-										<SelectSeparator />
-										<SelectItem value={CLEAR_RECENTS_VALUE}>
-											<span className="text-destructive">
-												Clear recent repositories
-											</span>
+									))}
+									<SelectSeparator />
+									<SelectItem value={CLEAR_RECENTS_VALUE}>
+										<span className="text-destructive">
+											Clear recent repositories
+										</span>
+									</SelectItem>
+								</SelectContent>
+							</Select>
+							<Select
+								value={selectedBranch}
+								disabled={!folder}
+								onValueChange={selectBranch}
+							>
+								<SelectTrigger className="w-full">
+									<SelectValue placeholder="Select branch" />
+								</SelectTrigger>
+								<SelectContent>
+									{branches.map((branch) => (
+										<SelectItem key={branch} value={branch}>
+											{branch}
 										</SelectItem>
-									</SelectContent>
-								</Select>
-								<Select
-									value={selectedBranch}
-									disabled={!folder}
-									onValueChange={selectBranch}
-								>
-									<SelectTrigger className="w-full">
-										<SelectValue placeholder="Select branch" />
-									</SelectTrigger>
-									<SelectContent>
-										{branches.map((branch) => (
-											<SelectItem key={branch} value={branch}>
-												{branch}
-											</SelectItem>
-										))}
-									</SelectContent>
-								</Select>
-							</div>
+									))}
+								</SelectContent>
+							</Select>
+						</div>
 					</CardContent>
 				</Card>
 
