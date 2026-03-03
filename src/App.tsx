@@ -1,8 +1,9 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { Command } from "@tauri-apps/plugin-shell";
-import { useMemo, useState } from "react";
+import { atom, useAtom } from "jotai";
+import { atomWithStorage } from "jotai/utils";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import {
 	Card,
 	CardContent,
@@ -16,6 +17,14 @@ import {
 	ResizablePanelGroup,
 } from "@/components/ui/resizable";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+	Select,
+	SelectContent,
+	SelectItem,
+	SelectSeparator,
+	SelectTrigger,
+	SelectValue,
+} from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import {
 	Table,
@@ -41,6 +50,28 @@ interface CommitFile {
 }
 
 const UNIT_SEPARATOR = "\u001f";
+const MAX_RECENT_REPOS = 8;
+const RECENT_REPOS_KEY = "recentRepos";
+const OPEN_REPO_VALUE = "__open__";
+const CLEAR_RECENTS_VALUE = "__clear_recents__";
+
+const folderAtom = atom<string | null>(null);
+const recentReposAtom = atomWithStorage<string[]>(RECENT_REPOS_KEY, []);
+const addRecentRepoAtom = atom(null, (get, set, value: string) => {
+	const repo = value.trim();
+	if (!repo) return;
+
+	const existing = sanitizeRecentRepos(get(recentReposAtom) ?? []);
+	const next = [repo, ...existing.filter((entry) => entry !== repo)];
+	set(recentReposAtom, next.slice(0, MAX_RECENT_REPOS));
+});
+
+function sanitizeRecentRepos(repos: string[]) {
+	return repos
+		.map((repo) => repo.trim())
+		.filter(Boolean)
+		.filter((repo, index, arr) => arr.indexOf(repo) === index);
+}
 
 function useLoadingState() {
 	return useState({ commits: false, files: false, diff: false });
@@ -233,7 +264,9 @@ async function getCommitFileDiff(
 
 function App() {
 	const [commits, setCommits] = useState<Commit[]>([]);
-	const [folder, setFolder] = useState<string | null>(null);
+	const [folder, setFolder] = useAtom(folderAtom);
+	const [recentRepos, setRecentRepos] = useAtom(recentReposAtom);
+	const [, addRecentRepo] = useAtom(addRecentRepoAtom);
 	const [error, setError] = useState<string | null>(null);
 	const [selectedCommit, setSelectedCommit] = useState<Commit | null>(null);
 	const [commitFiles, setCommitFiles] = useState<CommitFile[]>([]);
@@ -245,27 +278,93 @@ function App() {
 		if (!diff) return [];
 		return diff.replace(/\n$/, "").split("\n");
 	}, [diff]);
+	const diffLinesWithKeys = useMemo(() => {
+		const seen: Record<string, number> = {};
+		return diffLines.map((line) => {
+			const count = (seen[line] ?? 0) + 1;
+			seen[line] = count;
+
+			return {
+				line,
+				key: `${selectedFile?.path ?? ""}:${line.length}:${count}`,
+			};
+		});
+	}, [diffLines, selectedFile?.path]);
+
+	const normalizedRecentRepos = useMemo(
+		() => sanitizeRecentRepos(recentRepos),
+		[recentRepos],
+	);
+
+	const loadRepository = useCallback(
+		async (selected: string, remember = true) => {
+			const repo = selected.trim();
+			if (!repo) return;
+
+			setFolder(repo);
+			setSelectedCommit(null);
+			setSelectedFile(null);
+			setCommitFiles([]);
+			setDiff("");
+			setError(null);
+
+			if (remember) {
+				addRecentRepo(repo);
+			}
+
+			setLoading((state) => ({ ...state, commits: true }));
+
+			try {
+				const result = await getCommits(selected);
+				setCommits(result);
+			} catch (e) {
+				setError(String(e));
+				setCommits([]);
+			} finally {
+				setLoading((state) => ({ ...state, commits: false }));
+			}
+		},
+		[addRecentRepo, setFolder, setLoading],
+	);
+
+	useEffect(() => {
+		const initialRepo = normalizedRecentRepos[0];
+		if (!folder && initialRepo) {
+			void loadRepository(initialRepo, false);
+		}
+	}, [folder, normalizedRecentRepos, loadRepository]);
 
 	async function selectFolder() {
 		const selected = await open({ directory: true });
 		if (!selected) return;
 
-		setFolder(selected);
-		setSelectedCommit(null);
-		setSelectedFile(null);
-		setCommitFiles([]);
-		setDiff("");
-		setError(null);
-		setLoading((state) => ({ ...state, commits: true }));
+		await loadRepository(selected);
+	}
 
-		try {
-			const result = await getCommits(selected);
-			setCommits(result);
-		} catch (e) {
-			setError(String(e));
+	async function selectRecentFolder(selected: string) {
+		if (selected === OPEN_REPO_VALUE) {
+			await selectFolder();
+			return;
+		}
+		if (selected === CLEAR_RECENTS_VALUE) {
+			const ok = window.confirm(
+				`Clear all ${normalizedRecentRepos.length} recent repositories? This cannot be undone.`,
+			);
+			if (!ok) return;
+
+			setRecentRepos([]);
+			setFolder(null);
+			setSelectedCommit(null);
+			setSelectedFile(null);
+			setCommitFiles([]);
+			setDiff("");
+			setError(null);
 			setCommits([]);
-		} finally {
-			setLoading((state) => ({ ...state, commits: false }));
+			return;
+		}
+
+		if (selected !== folder) {
+			await loadRepository(selected);
 		}
 	}
 
@@ -326,15 +425,29 @@ function App() {
 						</CardDescription>
 					</CardHeader>
 					<CardContent>
-						<div className="flex flex-col md:flex-row md:items-center md:justify-between">
-							<p className="text-sm text-muted-foreground">
-								{folder
-									? `Repository: ${folder}`
-									: "No repository selected yet"}
-							</p>
-							<Button variant="outline" onClick={selectFolder}>
-								{folder ? "Change repository" : "Open repository"}
-							</Button>
+						<div className="w-full">
+							<Select value={folder ?? ""} onValueChange={selectRecentFolder}>
+								<SelectTrigger className="w-full md:max-w-[30rem]">
+									<SelectValue placeholder="Open repository" />
+								</SelectTrigger>
+								<SelectContent>
+									<SelectItem value={OPEN_REPO_VALUE}>
+										Open repository...
+									</SelectItem>
+									<SelectSeparator />
+									{normalizedRecentRepos.map((repo) => (
+										<SelectItem key={repo} value={repo}>
+											{repo}
+										</SelectItem>
+									))}
+									<SelectSeparator />
+									<SelectItem value={CLEAR_RECENTS_VALUE}>
+										<span className="text-destructive">
+											Clear recent repositories
+										</span>
+									</SelectItem>
+								</SelectContent>
+							</Select>
 						</div>
 					</CardContent>
 				</Card>
@@ -517,15 +630,15 @@ function App() {
 													No diff content available.
 												</span>
 											) : (
-												diffLines.map((line, index) => (
+												diffLinesWithKeys.map((lineItem) => (
 													<div
-														key={`${selectedFile.path}-${index}`}
+														key={lineItem.key}
 														className={cn(
 															"whitespace-pre-wrap font-mono",
-															diffLineClass(line),
+															diffLineClass(lineItem.line),
 														)}
 													>
-														{line || "\u00A0"}
+														{lineItem.line || "\u00A0"}
 													</div>
 												))
 											)}
