@@ -6,6 +6,17 @@
   "permissions": [
     "core:default",
     "opener:default",
-    "dialog:default"
+    "dialog:default",
+    "shell:default",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "cmd": "git",
+          "name": "git",
+          "args": true
+        }
+      ]
+    }
   ]
 }
