@@ -5,9 +5,12 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "fmt": "biome check src --write --unsafe --css-parse-tailwind-directives=true",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "biome:check": "biome check src --css-parse-tailwind-directives=true",
+    "biome:format": "biome check src --write --css-parse-tailwind-directives=true"
   },
   "dependencies": {
     "@base-ui/react": "^1.2.0",
@@ -39,6 +42,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.4.5",
     "@tauri-apps/cli": "^2",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
