@@ -397,7 +397,7 @@ function App() {
 
 	const commitFilesQuery = useQuery({
 		queryKey: ["commit-files", folder, selectedCommit?.id],
-		queryFn: () => getCommitFiles(folder || "", selectedCommit!.id),
+		queryFn: () => getCommitFiles(folder || "", selectedCommit?.id),
 		enabled: Boolean(folder && selectedCommit),
 		retry: 1,
 	});
@@ -412,8 +412,8 @@ function App() {
 		queryFn: () =>
 			getCommitFileDiff(
 				folder || "",
-				selectedCommit!.id,
-				selectedCommitFile!.path,
+				selectedCommit?.id,
+				selectedCommitFile?.path,
 			),
 		enabled: Boolean(folder && selectedCommit && selectedCommitFile),
 		retry: 1,
@@ -522,7 +522,9 @@ function App() {
 			}
 
 			try {
-				const discoveredBranches = sanitizeBranches(await getBranches(selected));
+				const discoveredBranches = sanitizeBranches(
+					await getBranches(selected),
+				);
 				const currentBranch =
 					(await getCurrentBranch(selected).catch(() => null)) ??
 					DEFAULT_BRANCH_VALUE;
@@ -643,48 +645,48 @@ function App() {
 						</CardDescription>
 					</CardHeader>
 					<CardContent>
-							<div className="grid gap-2 md:grid-cols-2">
-								<Select value={folder ?? ""} onValueChange={selectRecentFolder}>
-									<SelectTrigger className="w-full">
-										<SelectValue placeholder="Open repository" />
-									</SelectTrigger>
-									<SelectContent>
-										<SelectItem value={OPEN_REPO_VALUE}>
-											Open repository...
+						<div className="grid gap-2 md:grid-cols-2">
+							<Select value={folder ?? ""} onValueChange={selectRecentFolder}>
+								<SelectTrigger className="w-full">
+									<SelectValue placeholder="Open repository" />
+								</SelectTrigger>
+								<SelectContent>
+									<SelectItem value={OPEN_REPO_VALUE}>
+										Open repository...
+									</SelectItem>
+									<SelectSeparator />
+									{normalizedRecentRepos.map((repo) => (
+										<SelectItem key={repo} value={repo}>
+											{repo}
 										</SelectItem>
-										<SelectSeparator />
-										{normalizedRecentRepos.map((repo) => (
-											<SelectItem key={repo} value={repo}>
-												{repo}
-											</SelectItem>
-										))}
-										<SelectSeparator />
-										<SelectItem value={CLEAR_RECENTS_VALUE}>
-											<span className="text-destructive">
-												Clear recent repositories
-											</span>
+									))}
+									<SelectSeparator />
+									<SelectItem value={CLEAR_RECENTS_VALUE}>
+										<span className="text-destructive">
+											Clear recent repositories
+										</span>
+									</SelectItem>
+								</SelectContent>
+							</Select>
+							<Select
+								value={selectedBranch}
+								disabled={!folder}
+								onValueChange={selectBranch}
+							>
+								<SelectTrigger className="w-full">
+									<SelectValue placeholder="Select branch" />
+								</SelectTrigger>
+								<SelectContent>
+									{branches.map((branch) => (
+										<SelectItem key={branch} value={branch}>
+											{branch}
 										</SelectItem>
-									</SelectContent>
-								</Select>
-								<Select
-									value={selectedBranch}
-									disabled={!folder}
-									onValueChange={selectBranch}
-								>
-									<SelectTrigger className="w-full">
-										<SelectValue placeholder="Select branch" />
-									</SelectTrigger>
-									<SelectContent>
-										{branches.map((branch) => (
-											<SelectItem key={branch} value={branch}>
-												{branch}
-											</SelectItem>
-										))}
-									</SelectContent>
-								</Select>
-							</div>
-						</CardContent>
-					</Card>
+									))}
+								</SelectContent>
+							</Select>
+						</div>
+					</CardContent>
+				</Card>
 
 				{(commitsError ||
 					commitFilesError ||
