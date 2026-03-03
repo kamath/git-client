@@ -306,7 +306,7 @@ function App() {
           </Card>
         )}
 
-        <ResizablePanelGroup direction="horizontal" className="min-h-0 flex-1 overflow-hidden">
+        <ResizablePanelGroup className="min-h-0 flex-1 overflow-hidden">
           <ResizablePanel defaultSize={30} minSize={20} className="min-h-0 overflow-hidden">
             <Card className="h-full min-h-0">
               <CardHeader>
