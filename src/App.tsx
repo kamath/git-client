@@ -1,49 +1,73 @@
 import { useState } from "react";
-import reactLogo from "./assets/react.svg";
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import "./App.css";
 
-function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
+interface Commit {
+  id: string;
+  summary: string;
+  author: string;
+  time: number;
+}
 
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
+function App() {
+  const [commits, setCommits] = useState<Commit[]>([]);
+  const [folder, setFolder] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  async function selectFolder() {
+    const selected = await open({ directory: true });
+    if (!selected) return;
+
+    setFolder(selected);
+    setError(null);
+    setLoading(true);
+    try {
+      const result = await invoke<Commit[]>("get_commits", { path: selected });
+      setCommits(result);
+    } catch (e) {
+      setError(String(e));
+      setCommits([]);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function formatDate(epoch: number) {
+    return new Date(epoch * 1000).toLocaleDateString(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
   }
 
   return (
     <main className="container">
-      <h1>Welcome to Tauri + React</h1>
-
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
-
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
-        />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
+      <h1>Git Commit Viewer</h1>
+      <button className="select-folder" onClick={selectFolder}>
+        {folder ? "Change Folder" : "Select a Git Repository"}
+      </button>
+      {folder && <p className="folder-path">{folder}</p>}
+      {loading && <p>Loading commits...</p>}
+      {error && <p className="error">{error}</p>}
+      {commits.length > 0 && (
+        <div className="commit-list">
+          {commits.map((c) => (
+            <div key={c.id} className="commit-row">
+              <div className="commit-info">
+                <span className="commit-summary">{c.summary}</span>
+                <span className="commit-meta">
+                  {c.author} &middot; {formatDate(c.time)}
+                </span>
+              </div>
+              <code className="commit-hash">{c.id.slice(0, 7)}</code>
+            </div>
+          ))}
+        </div>
+      )}
     </main>
   );
 }
