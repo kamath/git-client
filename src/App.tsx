@@ -7,6 +7,11 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Separator } from "@/components/ui/separator"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from "@/components/ui/resizable"
+import {
   Table,
   TableBody,
   TableCell,
@@ -272,8 +277,8 @@ function App() {
   }
 
   return (
-    <main className="min-h-screen bg-background text-foreground">
-      <div className="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-4 p-4 md:p-6">
+    <main className="h-screen min-h-screen overflow-hidden bg-background text-foreground">
+      <div className="mx-auto flex h-full w-full flex-col">
         <Card>
           <CardHeader>
             <CardTitle className="text-xl">GitHub Desktop-style Commit Browser</CardTitle>
@@ -282,7 +287,7 @@ function App() {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div className="flex flex-col md:flex-row md:items-center md:justify-between">
               <p className="text-sm text-muted-foreground">
                 {folder
                   ? `Repository: ${folder}`
@@ -301,156 +306,166 @@ function App() {
           </Card>
         )}
 
-        <div className="grid gap-4 lg:grid-cols-[360px_360px_1fr]">
-          <Card className="min-h-0">
-            <CardHeader>
-              <CardTitle className="text-sm">Commits</CardTitle>
-              <CardDescription>
-                {commits.length > 0
-                  ? `${commits.length} commits loaded`
-                  : "Select a repository to load commits"}
-              </CardDescription>
-            </CardHeader>
-            <Separator />
-            <CardContent className="p-0">
-              <ScrollArea className="h-[62vh]">
-                {loading.commits ? (
-                  <div className="px-4 py-3 text-sm text-muted-foreground">
-                    Loading commit history...
-                  </div>
-                ) : commits.length === 0 ? (
-                  <div className="px-4 py-3 text-sm text-muted-foreground">
-                    No commits to show yet.
-                  </div>
-                ) : (
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead className="w-12">SHA</TableHead>
-                        <TableHead>Summary</TableHead>
-                        <TableHead>Author</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {commits.map((commit) => (
-                        <TableRow
-                          key={commit.id}
-                          onClick={() => loadCommitFiles(commit)}
-                          className={cn(
-                            "cursor-pointer",
-                            selectedCommit?.id === commit.id && "bg-muted"
-                          )}
-                        >
-                          <TableCell className="font-mono text-xs">{shortSha(commit.id)}</TableCell>
-                          <TableCell className="max-w-48 truncate">
-                            {commit.summary || "(no message)"}
-                          </TableCell>
-                          <TableCell className="text-xs text-muted-foreground">
-                            <div className="flex max-w-28 flex-col gap-1 truncate">
-                              <span>{commit.author}</span>
-                              <span>{formatDate(commit.time)}</span>
-                            </div>
-                          </TableCell>
+        <ResizablePanelGroup direction="horizontal" className="min-h-0 flex-1 overflow-hidden">
+          <ResizablePanel defaultSize={30} minSize={20} className="min-h-0 overflow-hidden">
+            <Card className="h-full min-h-0">
+              <CardHeader>
+                <CardTitle className="text-sm">Commits</CardTitle>
+                <CardDescription>
+                  {commits.length > 0
+                    ? `${commits.length} commits loaded`
+                    : "Select a repository to load commits"}
+                </CardDescription>
+              </CardHeader>
+              <Separator />
+              <CardContent className="flex-1 min-h-0 overflow-hidden p-0">
+                <ScrollArea className="h-full min-h-0 overflow-y-auto">
+                  {loading.commits ? (
+                    <div className="px-4 py-3 text-sm text-muted-foreground">
+                      Loading commit history...
+                    </div>
+                  ) : commits.length === 0 ? (
+                    <div className="px-4 py-3 text-sm text-muted-foreground">
+                      No commits to show yet.
+                    </div>
+                  ) : (
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="w-12">SHA</TableHead>
+                          <TableHead>Summary</TableHead>
+                          <TableHead>Author</TableHead>
                         </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                )}
-              </ScrollArea>
-            </CardContent>
-          </Card>
-
-          <Card className="min-h-0">
-            <CardHeader>
-              <CardTitle className="text-sm">Changed files</CardTitle>
-              <CardDescription>
-                {selectedCommit
-                  ? `Commit ${shortSha(selectedCommit.id)} · ${selectedCommit.summary}`
-                  : "Select a commit to list changed files"}
-              </CardDescription>
-            </CardHeader>
-            <Separator />
-            <CardContent className="p-0">
-              {loading.files ? (
-                <div className="px-4 py-3 text-sm text-muted-foreground">Loading changed files...</div>
-              ) : !selectedCommit ? (
-                <div className="px-4 py-3 text-sm text-muted-foreground">No commit selected.</div>
-              ) : commitFiles.length === 0 ? (
-                <div className="px-4 py-3 text-sm text-muted-foreground">This commit has no changed files.</div>
-              ) : (
-                <ScrollArea className="h-[62vh]">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>File</TableHead>
-                        <TableHead className="w-24">Status</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {commitFiles.map((file) => (
-                        <TableRow
-                          key={file.path}
-                          onClick={() => loadFileDiff(file)}
-                          className={cn(
-                            "cursor-pointer",
-                            selectedFile?.path === file.path && "bg-muted"
-                          )}
-                        >
-                          <TableCell className="max-w-56 truncate text-sm">
-                            {file.path}
-                          </TableCell>
-                          <TableCell>
-                            <Badge variant={statusStyle(file.status)}>{file.status}</Badge>
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </ScrollArea>
-              )}
-            </CardContent>
-          </Card>
-
-          <Card className="min-h-0">
-            <CardHeader>
-              <CardTitle className="text-sm">Diff</CardTitle>
-              <CardDescription>
-                {selectedFile
-                  ? `${selectedFile.path}`
-                  : selectedCommit
-                    ? "Select a file from the middle panel"
-                    : "Select a commit first"}
-              </CardDescription>
-            </CardHeader>
-            <Separator />
-            <CardContent className="p-0">
-              <ScrollArea className="h-[62vh]">
-                {loading.diff ? (
-                  <div className="px-4 py-3 text-sm text-muted-foreground">Loading file diff...</div>
-                ) : !selectedFile ? (
-                  <div className="px-4 py-3 text-sm text-muted-foreground">No file selected.</div>
-                ) : (
-                  <pre className="min-h-full p-4 text-xs leading-6">
-                    {diffLines.length === 0 ? (
-                      <span className="text-muted-foreground">No diff content available.</span>
-                    ) : (
-                      <>
-                        {diffLines.map((line, index) => (
-                          <div
-                            key={`${selectedFile.path}-${index}`}
-                            className={cn("whitespace-pre-wrap font-mono", diffLineClass(line))}
+                      </TableHeader>
+                      <TableBody>
+                        {commits.map((commit) => (
+                          <TableRow
+                            key={commit.id}
+                            onClick={() => loadCommitFiles(commit)}
+                            className={cn(
+                              "cursor-pointer",
+                              selectedCommit?.id === commit.id && "bg-muted"
+                            )}
                           >
-                            {line || "\u00A0"}
-                          </div>
+                            <TableCell className="font-mono text-xs">{shortSha(commit.id)}</TableCell>
+                            <TableCell className="max-w-48 truncate">
+                              {commit.summary || "(no message)"}
+                            </TableCell>
+                            <TableCell className="text-xs text-muted-foreground">
+                              <div className="flex max-w-28 flex-col gap-1 truncate">
+                                <span>{commit.author}</span>
+                                <span>{formatDate(commit.time)}</span>
+                              </div>
+                            </TableCell>
+                          </TableRow>
                         ))}
-                      </>
-                    )}
-                  </pre>
+                      </TableBody>
+                    </Table>
+                  )}
+                </ScrollArea>
+              </CardContent>
+            </Card>
+          </ResizablePanel>
+
+          <ResizableHandle withHandle />
+
+          <ResizablePanel defaultSize={25} minSize={16} className="min-h-0 overflow-hidden">
+            <Card className="h-full min-h-0">
+              <CardHeader>
+                <CardTitle className="text-sm">Changed files</CardTitle>
+                <CardDescription>
+                  {selectedCommit
+                    ? `Commit ${shortSha(selectedCommit.id)} · ${selectedCommit.summary}`
+                    : "Select a commit to list changed files"}
+                </CardDescription>
+              </CardHeader>
+              <Separator />
+              <CardContent className="flex-1 min-h-0 overflow-hidden p-0">
+                {loading.files ? (
+                  <div className="px-4 py-3 text-sm text-muted-foreground">Loading changed files...</div>
+                ) : !selectedCommit ? (
+                  <div className="px-4 py-3 text-sm text-muted-foreground">No commit selected.</div>
+                ) : commitFiles.length === 0 ? (
+                  <div className="px-4 py-3 text-sm text-muted-foreground">This commit has no changed files.</div>
+                ) : (
+                  <ScrollArea className="h-full min-h-0 overflow-y-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>File</TableHead>
+                          <TableHead className="w-24">Status</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {commitFiles.map((file) => (
+                          <TableRow
+                            key={file.path}
+                            onClick={() => loadFileDiff(file)}
+                            className={cn(
+                              "cursor-pointer",
+                              selectedFile?.path === file.path && "bg-muted"
+                            )}
+                          >
+                            <TableCell className="max-w-56 truncate text-sm">
+                              {file.path}
+                            </TableCell>
+                            <TableCell>
+                              <Badge variant={statusStyle(file.status)}>{file.status}</Badge>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </ScrollArea>
                 )}
-              </ScrollArea>
-            </CardContent>
-          </Card>
-        </div>
+              </CardContent>
+            </Card>
+          </ResizablePanel>
+
+          <ResizableHandle withHandle />
+
+          <ResizablePanel defaultSize={45} minSize={20} className="min-h-0 overflow-hidden">
+            <Card className="h-full min-h-0">
+              <CardHeader>
+                <CardTitle className="text-sm">Diff</CardTitle>
+                <CardDescription>
+                  {selectedFile
+                    ? `${selectedFile.path}`
+                    : selectedCommit
+                      ? "Select a file from the middle panel"
+                      : "Select a commit first"}
+                </CardDescription>
+              </CardHeader>
+              <Separator />
+              <CardContent className="flex-1 min-h-0 overflow-hidden p-0">
+                <ScrollArea className="h-full min-h-0 overflow-y-auto">
+                  {loading.diff ? (
+                    <div className="px-4 py-3 text-sm text-muted-foreground">Loading file diff...</div>
+                  ) : !selectedFile ? (
+                    <div className="px-4 py-3 text-sm text-muted-foreground">No file selected.</div>
+                  ) : (
+                    <pre className="min-h-full p-4 text-xs leading-6">
+                      {diffLines.length === 0 ? (
+                        <span className="text-muted-foreground">No diff content available.</span>
+                      ) : (
+                        <>
+                          {diffLines.map((line, index) => (
+                            <div
+                              key={`${selectedFile.path}-${index}`}
+                              className={cn("whitespace-pre-wrap font-mono", diffLineClass(line))}
+                            >
+                              {line || "\u00A0"}
+                            </div>
+                          ))}
+                        </>
+                      )}
+                    </pre>
+                  )}
+                </ScrollArea>
+              </CardContent>
+            </Card>
+          </ResizablePanel>
+        </ResizablePanelGroup>
       </div>
     </main>
   )
