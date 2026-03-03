@@ -54,6 +54,7 @@ const MAX_RECENT_REPOS = 8;
 const RECENT_REPOS_KEY = "recentRepos";
 const OPEN_REPO_VALUE = "__open__";
 const CLEAR_RECENTS_VALUE = "__clear_recents__";
+const DEFAULT_BRANCH_VALUE = "HEAD";
 
 const folderAtom = atom<string | null>(null);
 const recentReposAtom = atomWithStorage<string[]>(RECENT_REPOS_KEY, []);
@@ -71,6 +72,13 @@ function sanitizeRecentRepos(repos: string[]) {
 		.map((repo) => repo.trim())
 		.filter(Boolean)
 		.filter((repo, index, arr) => arr.indexOf(repo) === index);
+}
+
+function sanitizeBranches(branches: string[]) {
+	return branches
+		.map((branch) => branch.trim())
+		.filter(Boolean)
+		.filter((branch, index, arr) => arr.indexOf(branch) === index);
 }
 
 function useLoadingState() {
@@ -187,16 +195,17 @@ async function runGit(path: string, args: string[]) {
 	return result.stdout;
 }
 
-async function getCommits(path: string): Promise<Commit[]> {
-	const output = await runGit(path, [
-		"log",
-		"--max-count=100",
-		"--date=unix",
-		"--pretty=format:%H\u001f%an\u001f%ct\u001f%s",
-	]);
+	async function getCommits(path: string, revision = DEFAULT_BRANCH_VALUE): Promise<Commit[]> {
+		const output = await runGit(path, [
+			"log",
+			revision,
+			"--max-count=100",
+			"--date=unix",
+			"--pretty=format:%H\u001f%an\u001f%ct\u001f%s",
+		]);
 
-	return output
-		.split("\n")
+		return output
+			.split("\n")
 		.filter(Boolean)
 		.map((line) => {
 			const parts = line.split(UNIT_SEPARATOR);
@@ -211,8 +220,19 @@ async function getCommits(path: string): Promise<Commit[]> {
 				summary: summaryParts.join(UNIT_SEPARATOR),
 			};
 		})
-		.filter((value): value is Commit => value !== null);
-}
+			.filter((value): value is Commit => value !== null);
+	}
+
+	async function getCurrentBranch(path: string) {
+		const output = await runGit(path, ["rev-parse", "--abbrev-ref", "HEAD"]);
+		const branch = output.trim();
+		return branch === DEFAULT_BRANCH_VALUE ? null : branch;
+	}
+
+	async function getBranches(path: string): Promise<string[]> {
+		const output = await runGit(path, ["branch", "--format=%(refname:short)"]);
+		return sanitizeBranches(output.split("\n"));
+	}
 
 async function getCommitFiles(
 	path: string,
@@ -273,6 +293,8 @@ function App() {
 	const [selectedFile, setSelectedFile] = useState<CommitFile | null>(null);
 	const [diff, setDiff] = useState("");
 	const [loading, setLoading] = useLoadingState();
+	const [branches, setBranches] = useState<string[]>([]);
+	const [selectedBranch, setSelectedBranch] = useState<string>("");
 
 	const diffLines = useMemo(() => {
 		if (!diff) return [];
@@ -297,7 +319,7 @@ function App() {
 	);
 
 	const loadRepository = useCallback(
-		async (selected: string, remember = true) => {
+		async (selected: string, remember = true, branchHint?: string) => {
 			const repo = selected.trim();
 			if (!repo) return;
 
@@ -307,6 +329,8 @@ function App() {
 			setCommitFiles([]);
 			setDiff("");
 			setError(null);
+			setBranches([]);
+			setSelectedBranch("");
 
 			if (remember) {
 				addRecentRepo(repo);
@@ -315,11 +339,35 @@ function App() {
 			setLoading((state) => ({ ...state, commits: true }));
 
 			try {
-				const result = await getCommits(selected);
+				const discoveredBranches = sanitizeBranches(
+					await getBranches(selected),
+				);
+				const currentBranch =
+					(await getCurrentBranch(selected).catch(() => null)) ??
+					DEFAULT_BRANCH_VALUE;
+				const normalizedBranches = sanitizeBranches([
+					currentBranch,
+					...discoveredBranches,
+				]).filter(Boolean);
+
+				if (normalizedBranches.length === 0) {
+					throw new Error("No branches found for repository.");
+				}
+
+				setBranches(normalizedBranches);
+				const effectiveBranch = branchHint
+					&& normalizedBranches.includes(branchHint)
+					? branchHint
+					: normalizedBranches[0];
+				setSelectedBranch(effectiveBranch);
+
+				const result = await getCommits(selected, effectiveBranch);
 				setCommits(result);
 			} catch (e) {
 				setError(String(e));
 				setCommits([]);
+				setBranches([]);
+				setSelectedBranch("");
 			} finally {
 				setLoading((state) => ({ ...state, commits: false }));
 			}
@@ -341,7 +389,7 @@ function App() {
 		await loadRepository(selected);
 	}
 
-	async function selectRecentFolder(selected: string) {
+		async function selectRecentFolder(selected: string) {
 		if (selected === OPEN_REPO_VALUE) {
 			await selectFolder();
 			return;
@@ -363,10 +411,31 @@ function App() {
 			return;
 		}
 
-		if (selected !== folder) {
-			await loadRepository(selected);
+			if (selected !== folder) {
+				await loadRepository(selected);
+			}
 		}
-	}
+
+		async function selectBranch(selected: string) {
+			if (!folder || selected === selectedBranch) return;
+			setSelectedBranch(selected);
+			setSelectedCommit(null);
+			setSelectedFile(null);
+			setCommitFiles([]);
+			setDiff("");
+			setError(null);
+			setLoading((state) => ({ ...state, commits: true }));
+
+			try {
+				const result = await getCommits(folder, selected);
+				setCommits(result);
+			} catch (e) {
+				setError(String(e));
+				setCommits([]);
+			} finally {
+				setLoading((state) => ({ ...state, commits: false }));
+			}
+		}
 
 	async function loadCommitFiles(commit: Commit) {
 		if (!folder) return;
@@ -425,30 +494,46 @@ function App() {
 						</CardDescription>
 					</CardHeader>
 					<CardContent>
-						<div className="w-full">
-							<Select value={folder ?? ""} onValueChange={selectRecentFolder}>
-								<SelectTrigger className="w-full md:max-w-[30rem]">
-									<SelectValue placeholder="Open repository" />
-								</SelectTrigger>
-								<SelectContent>
-									<SelectItem value={OPEN_REPO_VALUE}>
-										Open repository...
-									</SelectItem>
-									<SelectSeparator />
-									{normalizedRecentRepos.map((repo) => (
-										<SelectItem key={repo} value={repo}>
-											{repo}
+							<div className="grid gap-2 md:grid-cols-2">
+								<Select value={folder ?? ""} onValueChange={selectRecentFolder}>
+									<SelectTrigger className="w-full">
+										<SelectValue placeholder="Open repository" />
+									</SelectTrigger>
+									<SelectContent>
+										<SelectItem value={OPEN_REPO_VALUE}>
+											Open repository...
 										</SelectItem>
-									))}
-									<SelectSeparator />
-									<SelectItem value={CLEAR_RECENTS_VALUE}>
-										<span className="text-destructive">
-											Clear recent repositories
-										</span>
-									</SelectItem>
-								</SelectContent>
-							</Select>
-						</div>
+										<SelectSeparator />
+										{normalizedRecentRepos.map((repo) => (
+											<SelectItem key={repo} value={repo}>
+												{repo}
+											</SelectItem>
+										))}
+										<SelectSeparator />
+										<SelectItem value={CLEAR_RECENTS_VALUE}>
+											<span className="text-destructive">
+												Clear recent repositories
+											</span>
+										</SelectItem>
+									</SelectContent>
+								</Select>
+								<Select
+									value={selectedBranch}
+									disabled={!folder}
+									onValueChange={selectBranch}
+								>
+									<SelectTrigger className="w-full">
+										<SelectValue placeholder="Select branch" />
+									</SelectTrigger>
+									<SelectContent>
+										{branches.map((branch) => (
+											<SelectItem key={branch} value={branch}>
+												{branch}
+											</SelectItem>
+										))}
+									</SelectContent>
+								</Select>
+							</div>
 					</CardContent>
 				</Card>
 
