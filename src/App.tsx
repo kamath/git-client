@@ -1,9 +1,9 @@
+import { useQuery } from "@tanstack/react-query";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Command } from "@tauri-apps/plugin-shell";
 import { atom, useAtom } from "jotai";
 import { atomWithStorage } from "jotai/utils";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/badge";
 import {
 	Card,
@@ -310,17 +310,15 @@ function App() {
 	const diff = commitFileDiffQuery.data ?? "";
 
 	const commitsError =
-		folder && commitsQuery.error
-		? errorMessage(commitsQuery.error)
-		: null;
+		folder && commitsQuery.error ? errorMessage(commitsQuery.error) : null;
 	const commitFilesError =
 		folder && selectedCommit && commitFilesQuery.error
-		? errorMessage(commitFilesQuery.error)
-		: null;
+			? errorMessage(commitFilesQuery.error)
+			: null;
 	const commitFileDiffError =
 		folder && selectedCommit && selectedFile && commitFileDiffQuery.error
-		? errorMessage(commitFileDiffQuery.error)
-		: null;
+			? errorMessage(commitFileDiffQuery.error)
+			: null;
 
 	const diffLines = useMemo(() => {
 		if (!diff) return [];
@@ -475,9 +473,7 @@ function App() {
 								<ScrollArea className="h-full min-h-0 overflow-y-auto">
 									{commitsQuery.isError ? (
 										<div className="px-4 py-3 text-sm text-destructive">
-											<div className="mb-2">
-												Failed to load commits.
-											</div>
+											<div className="mb-2">Failed to load commits.</div>
 											<Button
 												size="sm"
 												variant="outline"
@@ -636,24 +632,22 @@ function App() {
 							<Separator />
 							<CardContent className="flex-1 min-h-0 overflow-hidden p-0">
 								<ScrollArea className="h-full min-h-0 overflow-y-auto">
-								{commitFileDiffQuery.isError ? (
-									<div className="px-4 py-3 text-sm text-destructive">
-										<div className="mb-2">
-											Failed to load file diff.
+									{commitFileDiffQuery.isError ? (
+										<div className="px-4 py-3 text-sm text-destructive">
+											<div className="mb-2">Failed to load file diff.</div>
+											<Button
+												size="sm"
+												variant="outline"
+												onClick={() => commitFileDiffQuery.refetch()}
+												disabled={commitFileDiffQuery.isFetching}
+											>
+												Retry
+											</Button>
 										</div>
-										<Button
-											size="sm"
-											variant="outline"
-											onClick={() => commitFileDiffQuery.refetch()}
-											disabled={commitFileDiffQuery.isFetching}
-										>
-											Retry
-										</Button>
-									</div>
-								) : commitFileDiffQuery.isFetching ? (
-									<div className="px-4 py-3 text-sm text-muted-foreground">
-										Loading file diff...
-									</div>
+									) : commitFileDiffQuery.isFetching ? (
+										<div className="px-4 py-3 text-sm text-muted-foreground">
+											Loading file diff...
+										</div>
 									) : !selectedFile ? (
 										<div className="px-4 py-3 text-sm text-muted-foreground">
 											No file selected.
