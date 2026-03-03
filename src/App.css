@@ -115,10 +115,14 @@
 }
 
 @layer base {
+	html,
 	* {
 		@apply border-border outline-ring/50;
 	}
+	html,
 	body {
+		overflow: hidden;
+		overscroll-behavior: none;
 		@apply bg-background text-foreground;
 	}
 }
