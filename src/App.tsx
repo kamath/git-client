@@ -1,6 +1,7 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { Command } from "@tauri-apps/plugin-shell";
 import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -41,10 +42,6 @@ interface CommitFile {
 }
 
 const UNIT_SEPARATOR = "\u001f";
-
-function useLoadingState() {
-	return useState({ commits: false, files: false, diff: false });
-}
 
 function formatDate(epoch: number) {
 	return new Date(epoch * 1000).toLocaleString([], {
@@ -231,15 +228,66 @@ async function getCommitFileDiff(
 	return output || `No diff available for ${filePath}`;
 }
 
+function errorMessage(error: unknown) {
+	if (error instanceof Error) {
+		return error.message;
+	}
+
+	return String(error);
+}
+
 function App() {
-	const [commits, setCommits] = useState<Commit[]>([]);
 	const [folder, setFolder] = useState<string | null>(null);
-	const [error, setError] = useState<string | null>(null);
 	const [selectedCommit, setSelectedCommit] = useState<Commit | null>(null);
-	const [commitFiles, setCommitFiles] = useState<CommitFile[]>([]);
 	const [selectedFile, setSelectedFile] = useState<CommitFile | null>(null);
-	const [diff, setDiff] = useState("");
-	const [loading, setLoading] = useLoadingState();
+
+	const commitsQuery = useQuery({
+		queryKey: ["commits", folder],
+		queryFn: () => getCommits(folder || ""),
+		enabled: Boolean(folder),
+		retry: 1,
+	});
+
+	const commitFilesQuery = useQuery({
+		queryKey: ["commit-files", folder, selectedCommit?.id],
+		queryFn: () => getCommitFiles(folder || "", selectedCommit!.id),
+		enabled: Boolean(folder && selectedCommit),
+		retry: 1,
+	});
+
+	const commitFileDiffQuery = useQuery({
+		queryKey: [
+			"commit-file-diff",
+			folder,
+			selectedCommit?.id,
+			selectedFile?.path,
+		],
+		queryFn: () =>
+			getCommitFileDiff(
+				folder || "",
+				selectedCommit!.id,
+				selectedFile!.path,
+			),
+		enabled: Boolean(folder && selectedCommit && selectedFile),
+		retry: 1,
+	});
+
+	const commits = commitsQuery.data ?? [];
+	const commitFiles = commitFilesQuery.data ?? [];
+	const diff = commitFileDiffQuery.data ?? "";
+
+	const commitsError =
+		folder && commitsQuery.error
+		? errorMessage(commitsQuery.error)
+		: null;
+	const commitFilesError =
+		folder && selectedCommit && commitFilesQuery.error
+		? errorMessage(commitFilesQuery.error)
+		: null;
+	const commitFileDiffError =
+		folder && selectedCommit && selectedFile && commitFileDiffQuery.error
+		? errorMessage(commitFileDiffQuery.error)
+		: null;
 
 	const diffLines = useMemo(() => {
 		if (!diff) return [];
@@ -253,63 +301,15 @@ function App() {
 		setFolder(selected);
 		setSelectedCommit(null);
 		setSelectedFile(null);
-		setCommitFiles([]);
-		setDiff("");
-		setError(null);
-		setLoading((state) => ({ ...state, commits: true }));
-
-		try {
-			const result = await getCommits(selected);
-			setCommits(result);
-		} catch (e) {
-			setError(String(e));
-			setCommits([]);
-		} finally {
-			setLoading((state) => ({ ...state, commits: false }));
-		}
 	}
 
-	async function loadCommitFiles(commit: Commit) {
-		if (!folder) return;
-
+	function loadCommitFiles(commit: Commit) {
 		setSelectedCommit(commit);
 		setSelectedFile(null);
-		setDiff("");
-		setError(null);
-		setLoading((state) => ({ ...state, files: true, diff: false }));
-
-		try {
-			const files = await getCommitFiles(folder, commit.id);
-			setCommitFiles(files);
-		} catch (e) {
-			setError(String(e));
-			setCommitFiles([]);
-		} finally {
-			setLoading((state) => ({ ...state, files: false }));
-		}
 	}
 
-	async function loadFileDiff(file: CommitFile) {
-		if (!folder || !selectedCommit) return;
-
+	function loadFileDiff(file: CommitFile) {
 		setSelectedFile(file);
-		setDiff("");
-		setError(null);
-		setLoading((state) => ({ ...state, diff: true }));
-
-		try {
-			const patch = await getCommitFileDiff(
-				folder,
-				selectedCommit.id,
-				file.path,
-			);
-			setDiff(patch);
-		} catch (e) {
-			setError(String(e));
-			setDiff(String(e));
-		} finally {
-			setLoading((state) => ({ ...state, diff: false }));
-		}
 	}
 
 	return (
@@ -339,10 +339,10 @@ function App() {
 					</CardContent>
 				</Card>
 
-				{error && (
+				{(commitsError || commitFilesError || commitFileDiffError) && (
 					<Card className="border-destructive/50">
 						<CardContent className="text-sm text-destructive">
-							{error}
+							{commitsError || commitFilesError || commitFileDiffError}
 						</CardContent>
 					</Card>
 				)}
@@ -365,7 +365,21 @@ function App() {
 							<Separator />
 							<CardContent className="flex-1 min-h-0 overflow-hidden p-0">
 								<ScrollArea className="h-full min-h-0 overflow-y-auto">
-									{loading.commits ? (
+									{commitsQuery.isError ? (
+										<div className="px-4 py-3 text-sm text-destructive">
+											<div className="mb-2">
+												Failed to load commits.
+											</div>
+											<Button
+												size="sm"
+												variant="outline"
+												onClick={() => commitsQuery.refetch()}
+												disabled={commitsQuery.isFetching}
+											>
+												Retry
+											</Button>
+										</div>
+									) : commitsQuery.isFetching ? (
 										<div className="px-4 py-3 text-sm text-muted-foreground">
 											Loading commit history...
 										</div>
@@ -432,7 +446,19 @@ function App() {
 							</CardHeader>
 							<Separator />
 							<CardContent className="flex-1 min-h-0 overflow-hidden p-0">
-								{loading.files ? (
+								{commitFilesQuery.isError ? (
+									<div className="px-4 py-3 text-sm text-destructive">
+										<div className="mb-2">Failed to load changed files.</div>
+										<Button
+											size="sm"
+											variant="outline"
+											onClick={() => commitFilesQuery.refetch()}
+											disabled={commitFilesQuery.isFetching}
+										>
+											Retry
+										</Button>
+									</div>
+								) : commitFilesQuery.isFetching ? (
 									<div className="px-4 py-3 text-sm text-muted-foreground">
 										Loading changed files...
 									</div>
@@ -502,10 +528,24 @@ function App() {
 							<Separator />
 							<CardContent className="flex-1 min-h-0 overflow-hidden p-0">
 								<ScrollArea className="h-full min-h-0 overflow-y-auto">
-									{loading.diff ? (
-										<div className="px-4 py-3 text-sm text-muted-foreground">
-											Loading file diff...
+								{commitFileDiffQuery.isError ? (
+									<div className="px-4 py-3 text-sm text-destructive">
+										<div className="mb-2">
+											Failed to load file diff.
 										</div>
+										<Button
+											size="sm"
+											variant="outline"
+											onClick={() => commitFileDiffQuery.refetch()}
+											disabled={commitFileDiffQuery.isFetching}
+										>
+											Retry
+										</Button>
+									</div>
+								) : commitFileDiffQuery.isFetching ? (
+									<div className="px-4 py-3 text-sm text-muted-foreground">
+										Loading file diff...
+									</div>
 									) : !selectedFile ? (
 										<div className="px-4 py-3 text-sm text-muted-foreground">
 											No file selected.
