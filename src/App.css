@@ -123,6 +123,7 @@
 	body {
 		overflow: hidden;
 		overscroll-behavior: none;
+		touch-action: none;
 		@apply bg-background text-foreground;
 	}
 }
