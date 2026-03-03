@@ -1,4 +1,3 @@
-import { useQuery } from "@tanstack/react-query";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Command } from "@tauri-apps/plugin-shell";
 import { atom, useAtom } from "jotai";
@@ -55,6 +54,7 @@ const MAX_RECENT_REPOS = 8;
 const RECENT_REPOS_KEY = "recentRepos";
 const OPEN_REPO_VALUE = "__open__";
 const CLEAR_RECENTS_VALUE = "__clear_recents__";
+const DEFAULT_BRANCH_VALUE = "HEAD";
 
 const folderAtom = atom<string | null>(null);
 const recentReposAtom = atomWithStorage<string[]>(RECENT_REPOS_KEY, []);
@@ -72,6 +72,17 @@ function sanitizeRecentRepos(repos: string[]) {
 		.map((repo) => repo.trim())
 		.filter(Boolean)
 		.filter((repo, index, arr) => arr.indexOf(repo) === index);
+}
+
+function sanitizeBranches(branches: string[]) {
+	return branches
+		.map((branch) => branch.trim())
+		.filter(Boolean)
+		.filter((branch, index, arr) => arr.indexOf(branch) === index);
+}
+
+function useLoadingState() {
+	return useState({ commits: false, files: false, diff: false });
 }
 
 function formatDate(epoch: number) {
@@ -184,9 +195,13 @@ async function runGit(path: string, args: string[]) {
 	return result.stdout;
 }
 
-async function getCommits(path: string): Promise<Commit[]> {
+async function getCommits(
+	path: string,
+	revision = DEFAULT_BRANCH_VALUE,
+): Promise<Commit[]> {
 	const output = await runGit(path, [
 		"log",
+		revision,
 		"--max-count=100",
 		"--date=unix",
 		"--pretty=format:%H\u001f%an\u001f%ct\u001f%s",
@@ -209,6 +224,17 @@ async function getCommits(path: string): Promise<Commit[]> {
 			};
 		})
 		.filter((value): value is Commit => value !== null);
+}
+
+async function getCurrentBranch(path: string) {
+	const output = await runGit(path, ["rev-parse", "--abbrev-ref", "HEAD"]);
+	const branch = output.trim();
+	return branch === DEFAULT_BRANCH_VALUE ? null : branch;
+}
+
+async function getBranches(path: string): Promise<string[]> {
+	const output = await runGit(path, ["branch", "--format=%(refname:short)"]);
+	return sanitizeBranches(output.split("\n"));
 }
 
 async function getCommitFiles(
@@ -259,66 +285,19 @@ async function getCommitFileDiff(
 	return output || `No diff available for ${filePath}`;
 }
 
-function errorMessage(error: unknown) {
-	if (error instanceof Error) {
-		return error.message;
-	}
-
-	return String(error);
-}
-
 function App() {
+	const [commits, setCommits] = useState<Commit[]>([]);
 	const [folder, setFolder] = useAtom(folderAtom);
 	const [recentRepos, setRecentRepos] = useAtom(recentReposAtom);
 	const [, addRecentRepo] = useAtom(addRecentRepoAtom);
+	const [error, setError] = useState<string | null>(null);
 	const [selectedCommit, setSelectedCommit] = useState<Commit | null>(null);
+	const [commitFiles, setCommitFiles] = useState<CommitFile[]>([]);
 	const [selectedFile, setSelectedFile] = useState<CommitFile | null>(null);
-
-	const commitsQuery = useQuery({
-		queryKey: ["commits", folder],
-		queryFn: () => getCommits(folder || ""),
-		enabled: Boolean(folder),
-		retry: 1,
-	});
-
-	const commitFilesQuery = useQuery({
-		queryKey: ["commit-files", folder, selectedCommit?.id],
-		queryFn: () => getCommitFiles(folder || "", selectedCommit!.id),
-		enabled: Boolean(folder && selectedCommit),
-		retry: 1,
-	});
-
-	const commitFileDiffQuery = useQuery({
-		queryKey: [
-			"commit-file-diff",
-			folder,
-			selectedCommit?.id,
-			selectedFile?.path,
-		],
-		queryFn: () =>
-			getCommitFileDiff(
-				folder || "",
-				selectedCommit!.id,
-				selectedFile!.path,
-			),
-		enabled: Boolean(folder && selectedCommit && selectedFile),
-		retry: 1,
-	});
-
-	const commits = commitsQuery.data ?? [];
-	const commitFiles = commitFilesQuery.data ?? [];
-	const diff = commitFileDiffQuery.data ?? "";
-
-	const commitsError =
-		folder && commitsQuery.error ? errorMessage(commitsQuery.error) : null;
-	const commitFilesError =
-		folder && selectedCommit && commitFilesQuery.error
-			? errorMessage(commitFilesQuery.error)
-			: null;
-	const commitFileDiffError =
-		folder && selectedCommit && selectedFile && commitFileDiffQuery.error
-			? errorMessage(commitFileDiffQuery.error)
-			: null;
+	const [diff, setDiff] = useState("");
+	const [loading, setLoading] = useLoadingState();
+	const [branches, setBranches] = useState<string[]>([]);
+	const [selectedBranch, setSelectedBranch] = useState<string>("");
 
 	const diffLines = useMemo(() => {
 		if (!diff) return [];
@@ -343,19 +322,60 @@ function App() {
 	);
 
 	const loadRepository = useCallback(
-		async (selected: string, remember = true) => {
+		async (selected: string, remember = true, branchHint?: string) => {
 			const repo = selected.trim();
 			if (!repo) return;
 
 			setFolder(repo);
 			setSelectedCommit(null);
 			setSelectedFile(null);
+			setCommitFiles([]);
+			setDiff("");
+			setError(null);
+			setBranches([]);
+			setSelectedBranch("");
 
 			if (remember) {
 				addRecentRepo(repo);
 			}
+
+			setLoading((state) => ({ ...state, commits: true }));
+
+			try {
+				const discoveredBranches = sanitizeBranches(
+					await getBranches(selected),
+				);
+				const currentBranch =
+					(await getCurrentBranch(selected).catch(() => null)) ??
+					DEFAULT_BRANCH_VALUE;
+				const normalizedBranches = sanitizeBranches([
+					currentBranch,
+					...discoveredBranches,
+				]).filter(Boolean);
+
+				if (normalizedBranches.length === 0) {
+					throw new Error("No branches found for repository.");
+				}
+
+				setBranches(normalizedBranches);
+				const effectiveBranch =
+					branchHint && normalizedBranches.includes(branchHint)
+						? branchHint
+						: normalizedBranches[0];
+				setSelectedBranch(effectiveBranch);
+
+				const result = await getCommits(selected, effectiveBranch);
+				setCommits(result);
+			} catch (e) {
+				setError(String(e));
+				setCommits([]);
+				setBranches([]);
+				setSelectedBranch("");
+			} finally {
+				setLoading((state) => ({ ...state, commits: false }));
+			}
 		},
-		[addRecentRepo, setFolder],
+		[addRecentRepo, setFolder, setLoading],
 	);
 
 	useEffect(() => {
@@ -387,6 +407,10 @@ function App() {
 			setFolder(null);
 			setSelectedCommit(null);
 			setSelectedFile(null);
+			setCommitFiles([]);
+			setDiff("");
+			setError(null);
+			setCommits([]);
 			return;
 		}
 
@@ -395,13 +419,68 @@ function App() {
 		}
 	}
 
-	function loadCommitFiles(commit: Commit) {
-		setSelectedCommit(commit);
+	async function selectBranch(selected: string) {
+		if (!folder || selected === selectedBranch) return;
+		setSelectedBranch(selected);
+		setSelectedCommit(null);
 		setSelectedFile(null);
+		setCommitFiles([]);
+		setDiff("");
+		setError(null);
+		setLoading((state) => ({ ...state, commits: true }));
+
+		try {
+			const result = await getCommits(folder, selected);
+			setCommits(result);
+		} catch (e) {
+			setError(String(e));
+			setCommits([]);
+		} finally {
+			setLoading((state) => ({ ...state, commits: false }));
+		}
 	}
 
-	function loadFileDiff(file: CommitFile) {
+	async function loadCommitFiles(commit: Commit) {
+		if (!folder) return;
+
+		setSelectedCommit(commit);
+		setSelectedFile(null);
+		setDiff("");
+		setError(null);
+		setLoading((state) => ({ ...state, files: true, diff: false }));
+
+		try {
+			const files = await getCommitFiles(folder, commit.id);
+			setCommitFiles(files);
+		} catch (e) {
+			setError(String(e));
+			setCommitFiles([]);
+		} finally {
+			setLoading((state) => ({ ...state, files: false }));
+		}
+	}
+
+	async function loadFileDiff(file: CommitFile) {
+		if (!folder || !selectedCommit) return;
+
 		setSelectedFile(file);
+		setDiff("");
+		setError(null);
+		setLoading((state) => ({ ...state, diff: true }));
+
+		try {
+			const patch = await getCommitFileDiff(
+				folder,
+				selectedCommit.id,
+				file.path,
+			);
+			setDiff(patch);
+		} catch (e) {
+			setError(String(e));
+			setDiff(String(e));
+		} finally {
+			setLoading((state) => ({ ...state, diff: false }));
+		}
 	}
 
 	return (
@@ -418,9 +497,9 @@ function App() {
 						</CardDescription>
 					</CardHeader>
 					<CardContent>
-						<div className="w-full">
+						<div className="grid gap-2 md:grid-cols-2">
 							<Select value={folder ?? ""} onValueChange={selectRecentFolder}>
-								<SelectTrigger className="w-full md:max-w-[30rem]">
+								<SelectTrigger className="w-full">
 									<SelectValue placeholder="Open repository" />
 								</SelectTrigger>
 								<SelectContent>
@@ -441,14 +520,30 @@ function App() {
 									</SelectItem>
 								</SelectContent>
 							</Select>
+							<Select
+								value={selectedBranch}
+								disabled={!folder}
+								onValueChange={selectBranch}
+							>
+								<SelectTrigger className="w-full">
+									<SelectValue placeholder="Select branch" />
+								</SelectTrigger>
+								<SelectContent>
+									{branches.map((branch) => (
+										<SelectItem key={branch} value={branch}>
+											{branch}
+										</SelectItem>
+									))}
+								</SelectContent>
+							</Select>
 						</div>
 					</CardContent>
 				</Card>
 
-				{(commitsError || commitFilesError || commitFileDiffError) && (
+				{error && (
 					<Card className="border-destructive/50">
 						<CardContent className="text-sm text-destructive">
-							{commitsError || commitFilesError || commitFileDiffError}
+							{error}
 						</CardContent>
 					</Card>
 				)}
@@ -471,19 +566,7 @@ function App() {
 							<Separator />
 							<CardContent className="flex-1 min-h-0 overflow-hidden p-0">
 								<ScrollArea className="h-full min-h-0 overflow-y-auto">
-									{commitsQuery.isError ? (
-										<div className="px-4 py-3 text-sm text-destructive">
-											<div className="mb-2">Failed to load commits.</div>
-											<Button
-												size="sm"
-												variant="outline"
-												onClick={() => commitsQuery.refetch()}
-												disabled={commitsQuery.isFetching}
-											>
-												Retry
-											</Button>
-										</div>
-									) : commitsQuery.isFetching ? (
+									{loading.commits ? (
 										<div className="px-4 py-3 text-sm text-muted-foreground">
 											Loading commit history...
 										</div>
@@ -550,19 +633,7 @@ function App() {
 							</CardHeader>
 							<Separator />
 							<CardContent className="flex-1 min-h-0 overflow-hidden p-0">
-								{commitFilesQuery.isError ? (
-									<div className="px-4 py-3 text-sm text-destructive">
-										<div className="mb-2">Failed to load changed files.</div>
-										<Button
-											size="sm"
-											variant="outline"
-											onClick={() => commitFilesQuery.refetch()}
-											disabled={commitFilesQuery.isFetching}
-										>
-											Retry
-										</Button>
-									</div>
-								) : commitFilesQuery.isFetching ? (
+								{loading.files ? (
 									<div className="px-4 py-3 text-sm text-muted-foreground">
 										Loading changed files...
 									</div>
@@ -632,19 +703,7 @@ function App() {
 							<Separator />
 							<CardContent className="flex-1 min-h-0 overflow-hidden p-0">
 								<ScrollArea className="h-full min-h-0 overflow-y-auto">
-									{commitFileDiffQuery.isError ? (
-										<div className="px-4 py-3 text-sm text-destructive">
-											<div className="mb-2">Failed to load file diff.</div>
-											<Button
-												size="sm"
-												variant="outline"
-												onClick={() => commitFileDiffQuery.refetch()}
-												disabled={commitFileDiffQuery.isFetching}
-											>
-												Retry
-											</Button>
-										</div>
-									) : commitFileDiffQuery.isFetching ? (
+									{loading.diff ? (
 										<div className="px-4 py-3 text-sm text-muted-foreground">
 											Loading file diff...
 										</div>
