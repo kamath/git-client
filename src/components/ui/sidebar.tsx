@@ -75,8 +75,19 @@ function SidebarProvider({
 			return;
 		}
 
-		if ("cookieStore" in window) {
-			void window.cookieStore.set({
+		const sidebarWindow = window as Window & {
+			cookieStore?: {
+				set: (options: {
+					name: string;
+					value: string;
+					path: string;
+					maxAge: number;
+				}) => Promise<unknown>;
+			};
+		};
+
+		if (sidebarWindow.cookieStore) {
+			void sidebarWindow.cookieStore.set({
 				name: SIDEBAR_COOKIE_NAME,
 				value: String(openState),
 				path: "/",

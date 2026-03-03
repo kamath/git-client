@@ -1,8 +1,10 @@
+import { useQuery } from "@tanstack/react-query";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Command } from "@tauri-apps/plugin-shell";
 import { atom, useAtom } from "jotai";
 import { atomWithStorage } from "jotai/utils";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
 	Card,
@@ -27,6 +29,12 @@ import {
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import {
+	Tabs,
+	TabsContent,
+	TabsList,
+	TabsTrigger,
+} from "@/components/ui/tabs";
+import {
 	Table,
 	TableBody,
 	TableCell,
@@ -49,12 +57,13 @@ interface CommitFile {
 	status: string;
 }
 
+type CommitTab = "changes" | "history";
+
 const UNIT_SEPARATOR = "\u001f";
 const MAX_RECENT_REPOS = 8;
 const RECENT_REPOS_KEY = "recentRepos";
 const OPEN_REPO_VALUE = "__open__";
 const CLEAR_RECENTS_VALUE = "__clear_recents__";
-const DEFAULT_BRANCH_VALUE = "HEAD";
 
 const folderAtom = atom<string | null>(null);
 const recentReposAtom = atomWithStorage<string[]>(RECENT_REPOS_KEY, []);
@@ -72,17 +81,6 @@ function sanitizeRecentRepos(repos: string[]) {
 		.map((repo) => repo.trim())
 		.filter(Boolean)
 		.filter((repo, index, arr) => arr.indexOf(repo) === index);
-}
-
-function sanitizeBranches(branches: string[]) {
-	return branches
-		.map((branch) => branch.trim())
-		.filter(Boolean)
-		.filter((branch, index, arr) => arr.indexOf(branch) === index);
-}
-
-function useLoadingState() {
-	return useState({ commits: false, files: false, diff: false });
 }
 
 function formatDate(epoch: number) {
@@ -111,6 +109,8 @@ function statusStyle(
 			return "destructive";
 		case "Renamed":
 			return "outline";
+		case "Untracked":
+			return "outline";
 		default:
 			return "secondary";
 	}
@@ -130,6 +130,29 @@ function mapFileStatus(code: string): string {
 			return "Copied";
 		case "T":
 			return "Type changed";
+		default:
+			return "Modified";
+	}
+}
+
+function mapWorkingTreeFileStatus(code: string): string {
+	switch (code) {
+		case "A":
+			return "Added";
+		case "D":
+			return "Deleted";
+		case "M":
+			return "Modified";
+		case "R":
+			return "Renamed";
+		case "C":
+			return "Copied";
+		case "T":
+			return "Type changed";
+		case "?":
+			return "Untracked";
+		case "U":
+			return "Unmerged";
 		default:
 			return "Modified";
 	}
@@ -195,13 +218,9 @@ async function runGit(path: string, args: string[]) {
 	return result.stdout;
 }
 
-async function getCommits(
-	path: string,
-	revision = DEFAULT_BRANCH_VALUE,
-): Promise<Commit[]> {
+async function getCommits(path: string): Promise<Commit[]> {
 	const output = await runGit(path, [
 		"log",
-		revision,
 		"--max-count=100",
 		"--date=unix",
 		"--pretty=format:%H\u001f%an\u001f%ct\u001f%s",
@@ -224,17 +243,6 @@ async function getCommits(
 			};
 		})
 		.filter((value): value is Commit => value !== null);
-}
-
-async function getCurrentBranch(path: string) {
-	const output = await runGit(path, ["rev-parse", "--abbrev-ref", "HEAD"]);
-	const branch = output.trim();
-	return branch === DEFAULT_BRANCH_VALUE ? null : branch;
-}
-
-async function getBranches(path: string): Promise<string[]> {
-	const output = await runGit(path, ["branch", "--format=%(refname:short)"]);
-	return sanitizeBranches(output.split("\n"));
 }
 
 async function getCommitFiles(
@@ -285,19 +293,170 @@ async function getCommitFileDiff(
 	return output || `No diff available for ${filePath}`;
 }
 
+async function getWorkingTreeFiles(path: string): Promise<CommitFile[]> {
+	const output = await runGit(path, [
+		"status",
+		"--short",
+		"--untracked-files=normal",
+	]);
+
+	return output
+		.split("\n")
+		.filter(Boolean)
+		.map((line) => {
+			if (line.length < 3) return null;
+
+			const statusCode = line.slice(0, 2);
+			const filePath = line.slice(3);
+			if (!filePath) return null;
+
+			if (statusCode === "??") {
+				return {
+					path: filePath,
+					status: mapWorkingTreeFileStatus("?"),
+				};
+			}
+
+			if (statusCode[1] === " ") {
+				return null;
+			}
+
+			return {
+				path: filePath,
+				status: mapWorkingTreeFileStatus(statusCode[1]),
+			};
+		})
+		.filter((value): value is CommitFile => value !== null);
+}
+
+async function getWorkingTreeFileDiff(
+	path: string,
+	file: CommitFile,
+): Promise<string> {
+	if (file.status === "Untracked") {
+		const output = await runGit(path, [
+			"diff",
+			"--no-index",
+			"--no-color",
+			"--",
+			"/dev/null",
+			file.path,
+		]);
+		return output || `No diff available for ${file.path}`;
+	}
+
+	const output = await runGit(path, ["diff", "--no-color", "--", file.path]);
+	return output || `No diff available for ${file.path}`;
+}
+
+function errorMessage(error: unknown) {
+	if (error instanceof Error) {
+		return error.message;
+	}
+
+	return String(error);
+}
+
 function App() {
-	const [commits, setCommits] = useState<Commit[]>([]);
 	const [folder, setFolder] = useAtom(folderAtom);
 	const [recentRepos, setRecentRepos] = useAtom(recentReposAtom);
 	const [, addRecentRepo] = useAtom(addRecentRepoAtom);
-	const [error, setError] = useState<string | null>(null);
 	const [selectedCommit, setSelectedCommit] = useState<Commit | null>(null);
-	const [commitFiles, setCommitFiles] = useState<CommitFile[]>([]);
-	const [selectedFile, setSelectedFile] = useState<CommitFile | null>(null);
-	const [diff, setDiff] = useState("");
-	const [loading, setLoading] = useLoadingState();
-	const [branches, setBranches] = useState<string[]>([]);
-	const [selectedBranch, setSelectedBranch] = useState<string>("");
+	const [activeCommitTab, setActiveCommitTab] = useState<CommitTab>("history");
+	const [selectedCommitFile, setSelectedCommitFile] =
+		useState<CommitFile | null>(null);
+	const [selectedWorkingTreeFile, setSelectedWorkingTreeFile] =
+		useState<CommitFile | null>(null);
+
+	const commitsQuery = useQuery({
+		queryKey: ["commits", folder],
+		queryFn: () => getCommits(folder || ""),
+		enabled: Boolean(folder),
+		retry: 1,
+	});
+
+	const commitFilesQuery = useQuery({
+		queryKey: ["commit-files", folder, selectedCommit?.id],
+		queryFn: () => getCommitFiles(folder || "", selectedCommit!.id),
+		enabled: Boolean(folder && selectedCommit),
+		retry: 1,
+	});
+
+	const commitFileDiffQuery = useQuery({
+		queryKey: [
+			"commit-file-diff",
+			folder,
+			selectedCommit?.id,
+			selectedCommitFile?.path,
+		],
+		queryFn: () =>
+			getCommitFileDiff(
+				folder || "",
+				selectedCommit!.id,
+				selectedCommitFile!.path,
+			),
+		enabled: Boolean(folder && selectedCommit && selectedCommitFile),
+		retry: 1,
+	});
+
+	const workingTreeFilesQuery = useQuery({
+		queryKey: ["working-tree-files", folder],
+		queryFn: () => getWorkingTreeFiles(folder || ""),
+		enabled: Boolean(folder),
+		retry: 1,
+	});
+
+	const workingTreeFileDiffQuery = useQuery({
+		queryKey: ["working-tree-file-diff", folder, selectedWorkingTreeFile?.path],
+		queryFn: () => getWorkingTreeFileDiff(folder || "", selectedWorkingTreeFile!),
+		enabled: Boolean(
+			folder && activeCommitTab === "changes" && selectedWorkingTreeFile,
+		),
+		retry: 1,
+	});
+
+	const commits = commitsQuery.data ?? [];
+	const commitFiles = commitFilesQuery.data ?? [];
+	const workingTreeFiles = workingTreeFilesQuery.data ?? [];
+	const diff =
+		activeCommitTab === "changes"
+			? workingTreeFileDiffQuery.data ?? ""
+			: commitFileDiffQuery.data ?? "";
+	const activeSelectedFile =
+		activeCommitTab === "history" ? selectedCommitFile : selectedWorkingTreeFile;
+	const fileDiffIsError =
+		activeCommitTab === "history"
+			? commitFileDiffQuery.isError
+			: workingTreeFileDiffQuery.isError;
+	const fileDiffIsLoading =
+		activeCommitTab === "history"
+			? commitFileDiffQuery.isFetching
+			: workingTreeFileDiffQuery.isFetching;
+	const refetchFileDiff = activeCommitTab === "history"
+		? () => commitFileDiffQuery.refetch()
+		: () => workingTreeFileDiffQuery.refetch();
+
+	const commitsError =
+		folder && commitsQuery.error ? errorMessage(commitsQuery.error) : null;
+	const commitFilesError =
+		folder && selectedCommit && commitFilesQuery.error
+			? errorMessage(commitFilesQuery.error)
+			: null;
+	const workingTreeFilesError =
+		folder && workingTreeFilesQuery.error
+			? errorMessage(workingTreeFilesQuery.error)
+			: null;
+	const commitFileDiffError =
+		folder && selectedCommit && selectedCommitFile && commitFileDiffQuery.error
+			? errorMessage(commitFileDiffQuery.error)
+			: null;
+	const workingTreeFileDiffError =
+		folder &&
+		activeCommitTab === "changes" &&
+		selectedWorkingTreeFile &&
+		workingTreeFileDiffQuery.error
+			? errorMessage(workingTreeFileDiffQuery.error)
+			: null;
 
 	const diffLines = useMemo(() => {
 		if (!diff) return [];
@@ -311,10 +470,10 @@ function App() {
 
 			return {
 				line,
-				key: `${selectedFile?.path ?? ""}:${line.length}:${count}`,
+				key: `${activeSelectedFile?.path ?? ""}:${line.length}:${count}`,
 			};
 		});
-	}, [diffLines, selectedFile?.path]);
+	}, [diffLines, activeSelectedFile?.path]);
 
 	const normalizedRecentRepos = useMemo(
 		() => sanitizeRecentRepos(recentRepos),
@@ -322,60 +481,21 @@ function App() {
 	);
 
 	const loadRepository = useCallback(
-		async (selected: string, remember = true, branchHint?: string) => {
+		async (selected: string, remember = true) => {
 			const repo = selected.trim();
 			if (!repo) return;
 
 			setFolder(repo);
 			setSelectedCommit(null);
-			setSelectedFile(null);
-			setCommitFiles([]);
-			setDiff("");
-			setError(null);
-			setBranches([]);
-			setSelectedBranch("");
+			setSelectedCommitFile(null);
+			setSelectedWorkingTreeFile(null);
+			setActiveCommitTab("history");
 
 			if (remember) {
 				addRecentRepo(repo);
 			}
-
-			setLoading((state) => ({ ...state, commits: true }));
-
-			try {
-				const discoveredBranches = sanitizeBranches(
-					await getBranches(selected),
-				);
-				const currentBranch =
-					(await getCurrentBranch(selected).catch(() => null)) ??
-					DEFAULT_BRANCH_VALUE;
-				const normalizedBranches = sanitizeBranches([
-					currentBranch,
-					...discoveredBranches,
-				]).filter(Boolean);
-
-				if (normalizedBranches.length === 0) {
-					throw new Error("No branches found for repository.");
-				}
-
-				setBranches(normalizedBranches);
-				const effectiveBranch =
-					branchHint && normalizedBranches.includes(branchHint)
-						? branchHint
-						: normalizedBranches[0];
-				setSelectedBranch(effectiveBranch);
-
-				const result = await getCommits(selected, effectiveBranch);
-				setCommits(result);
-			} catch (e) {
-				setError(String(e));
-				setCommits([]);
-				setBranches([]);
-				setSelectedBranch("");
-			} finally {
-				setLoading((state) => ({ ...state, commits: false }));
-			}
 		},
-		[addRecentRepo, setFolder, setLoading],
+		[addRecentRepo, setFolder],
 	);
 
 	useEffect(() => {
@@ -406,11 +526,9 @@ function App() {
 			setRecentRepos([]);
 			setFolder(null);
 			setSelectedCommit(null);
-			setSelectedFile(null);
-			setCommitFiles([]);
-			setDiff("");
-			setError(null);
-			setCommits([]);
+			setSelectedCommitFile(null);
+			setSelectedWorkingTreeFile(null);
+			setActiveCommitTab("history");
 			return;
 		}
 
@@ -419,68 +537,33 @@ function App() {
 		}
 	}
 
-	async function selectBranch(selected: string) {
-		if (!folder || selected === selectedBranch) return;
-		setSelectedBranch(selected);
-		setSelectedCommit(null);
-		setSelectedFile(null);
-		setCommitFiles([]);
-		setDiff("");
-		setError(null);
-		setLoading((state) => ({ ...state, commits: true }));
-
-		try {
-			const result = await getCommits(folder, selected);
-			setCommits(result);
-		} catch (e) {
-			setError(String(e));
-			setCommits([]);
-		} finally {
-			setLoading((state) => ({ ...state, commits: false }));
-		}
-	}
-
-	async function loadCommitFiles(commit: Commit) {
-		if (!folder) return;
-
+	function loadCommitFiles(commit: Commit) {
 		setSelectedCommit(commit);
-		setSelectedFile(null);
-		setDiff("");
-		setError(null);
-		setLoading((state) => ({ ...state, files: true, diff: false }));
-
-		try {
-			const files = await getCommitFiles(folder, commit.id);
-			setCommitFiles(files);
-		} catch (e) {
-			setError(String(e));
-			setCommitFiles([]);
-		} finally {
-			setLoading((state) => ({ ...state, files: false }));
-		}
+		setSelectedCommitFile(null);
+		setSelectedWorkingTreeFile(null);
+		setActiveCommitTab("history");
 	}
 
-	async function loadFileDiff(file: CommitFile) {
-		if (!folder || !selectedCommit) return;
-
-		setSelectedFile(file);
-		setDiff("");
-		setError(null);
-		setLoading((state) => ({ ...state, diff: true }));
-
-		try {
-			const patch = await getCommitFileDiff(
-				folder,
-				selectedCommit.id,
-				file.path,
-			);
-			setDiff(patch);
-		} catch (e) {
-			setError(String(e));
-			setDiff(String(e));
-		} finally {
-			setLoading((state) => ({ ...state, diff: false }));
+	function setModeAndClearSelections(mode: CommitTab) {
+		setActiveCommitTab(mode);
+		if (mode === "history") {
+			setSelectedWorkingTreeFile(null);
+			return;
 		}
+		setSelectedCommit(null);
+		setSelectedCommitFile(null);
+	}
+
+	function loadCommitFileDiff(file: CommitFile) {
+		setSelectedCommitFile(file);
+		setSelectedWorkingTreeFile(null);
+		setActiveCommitTab("history");
+	}
+
+	function loadWorkingTreeFileDiff(file: CommitFile) {
+		setSelectedWorkingTreeFile(file);
+		setSelectedCommitFile(null);
+		setActiveCommitTab("changes");
 	}
 
 	return (
@@ -497,9 +580,9 @@ function App() {
 						</CardDescription>
 					</CardHeader>
 					<CardContent>
-						<div className="grid gap-2 md:grid-cols-2">
+						<div className="w-full">
 							<Select value={folder ?? ""} onValueChange={selectRecentFolder}>
-								<SelectTrigger className="w-full">
+								<SelectTrigger className="w-full md:max-w-[30rem]">
 									<SelectValue placeholder="Open repository" />
 								</SelectTrigger>
 								<SelectContent>
@@ -520,30 +603,24 @@ function App() {
 									</SelectItem>
 								</SelectContent>
 							</Select>
-							<Select
-								value={selectedBranch}
-								disabled={!folder}
-								onValueChange={selectBranch}
-							>
-								<SelectTrigger className="w-full">
-									<SelectValue placeholder="Select branch" />
-								</SelectTrigger>
-								<SelectContent>
-									{branches.map((branch) => (
-										<SelectItem key={branch} value={branch}>
-											{branch}
-										</SelectItem>
-									))}
-								</SelectContent>
-							</Select>
 						</div>
 					</CardContent>
 				</Card>
 
-				{error && (
+				{(
+						commitsError ||
+						commitFilesError ||
+						workingTreeFilesError ||
+						commitFileDiffError ||
+						workingTreeFileDiffError
+					) && (
 					<Card className="border-destructive/50">
 						<CardContent className="text-sm text-destructive">
-							{error}
+							{commitsError ||
+								commitFilesError ||
+								workingTreeFilesError ||
+								commitFileDiffError ||
+								workingTreeFileDiffError}
 						</CardContent>
 					</Card>
 				)}
@@ -557,60 +634,144 @@ function App() {
 						<Card className="h-full min-h-0">
 							<CardHeader>
 								<CardTitle className="text-sm">Commits</CardTitle>
-								<CardDescription>
-									{commits.length > 0
-										? `${commits.length} commits loaded`
-										: "Select a repository to load commits"}
-								</CardDescription>
+								<CardDescription>Switch between Changes and History</CardDescription>
 							</CardHeader>
 							<Separator />
-							<CardContent className="flex-1 min-h-0 overflow-hidden p-0">
-								<ScrollArea className="h-full min-h-0 overflow-y-auto">
-									{loading.commits ? (
-										<div className="px-4 py-3 text-sm text-muted-foreground">
-											Loading commit history...
-										</div>
-									) : commits.length === 0 ? (
-										<div className="px-4 py-3 text-sm text-muted-foreground">
-											No commits to show yet.
-										</div>
-									) : (
-										<Table>
-											<TableHeader>
-												<TableRow>
-													<TableHead className="w-12">SHA</TableHead>
-													<TableHead>Summary</TableHead>
-													<TableHead>Author</TableHead>
-												</TableRow>
-											</TableHeader>
-											<TableBody>
-												{commits.map((commit) => (
-													<TableRow
-														key={commit.id}
-														onClick={() => loadCommitFiles(commit)}
-														className={cn(
-															"cursor-pointer",
-															selectedCommit?.id === commit.id && "bg-muted",
-														)}
-													>
-														<TableCell className="font-mono text-xs">
-															{shortSha(commit.id)}
-														</TableCell>
-														<TableCell className="max-w-48 truncate">
-															{commit.summary || "(no message)"}
-														</TableCell>
-														<TableCell className="text-xs text-muted-foreground">
-															<div className="flex max-w-28 flex-col gap-1 truncate">
-																<span>{commit.author}</span>
-																<span>{formatDate(commit.time)}</span>
-															</div>
-														</TableCell>
-													</TableRow>
-												))}
-											</TableBody>
-										</Table>
-									)}
-								</ScrollArea>
+							<CardContent className="flex min-h-0 flex-1 overflow-hidden p-0">
+								<Tabs
+									value={activeCommitTab}
+									onValueChange={(value) =>
+										setModeAndClearSelections(value as CommitTab)
+									}
+									className="flex min-h-0 flex-1 flex-col"
+								>
+									<div className="px-4 py-2">
+										<TabsList className="w-full justify-start">
+											<TabsTrigger value="changes">Changes</TabsTrigger>
+											<TabsTrigger value="history">History</TabsTrigger>
+										</TabsList>
+									</div>
+									<TabsContent value="changes" className="min-h-0 flex-1">
+										{workingTreeFilesQuery.isError ? (
+											<div className="px-4 py-3 text-sm text-destructive">
+												<div className="mb-2">Failed to load unstaged files.</div>
+												<Button
+													size="sm"
+													variant="outline"
+													onClick={() => workingTreeFilesQuery.refetch()}
+													disabled={workingTreeFilesQuery.isFetching}
+												>
+													Retry
+												</Button>
+											</div>
+										) : workingTreeFilesQuery.isFetching ? (
+											<div className="px-4 py-3 text-sm text-muted-foreground">
+												Loading unstaged files...
+											</div>
+										) : !folder ? (
+											<div className="px-4 py-3 text-sm text-muted-foreground">
+												Select a repository first.
+											</div>
+										) : workingTreeFiles.length === 0 ? (
+											<div className="px-4 py-3 text-sm text-muted-foreground">
+												No unstaged files.
+											</div>
+										) : (
+											<ScrollArea className="h-full min-h-0 overflow-y-auto">
+												<Table>
+													<TableHeader>
+														<TableRow>
+															<TableHead>File</TableHead>
+															<TableHead className="w-24">Status</TableHead>
+														</TableRow>
+													</TableHeader>
+													<TableBody>
+														{workingTreeFiles.map((file) => (
+															<TableRow
+																key={file.path}
+																onClick={() => loadWorkingTreeFileDiff(file)}
+																className={cn(
+																	"cursor-pointer",
+																	selectedWorkingTreeFile?.path === file.path &&
+																		"bg-muted",
+																)}
+															>
+																<TableCell className="max-w-56 truncate text-sm">
+																	{file.path}
+																</TableCell>
+																<TableCell>
+																	<Badge variant={statusStyle(file.status)}>
+																		{file.status}
+																	</Badge>
+																</TableCell>
+															</TableRow>
+														))}
+													</TableBody>
+												</Table>
+											</ScrollArea>
+										)}
+									</TabsContent>
+									<TabsContent value="history" className="min-h-0 flex-1">
+										{commitsQuery.isError ? (
+											<div className="px-4 py-3 text-sm text-destructive">
+												<div className="mb-2">Failed to load commits.</div>
+												<Button
+													size="sm"
+													variant="outline"
+													onClick={() => commitsQuery.refetch()}
+													disabled={commitsQuery.isFetching}
+												>
+													Retry
+												</Button>
+											</div>
+										) : commitsQuery.isFetching ? (
+											<div className="px-4 py-3 text-sm text-muted-foreground">
+												Loading commit history...
+											</div>
+										) : commits.length === 0 ? (
+											<div className="px-4 py-3 text-sm text-muted-foreground">
+												No commits to show yet.
+											</div>
+										) : (
+											<ScrollArea className="h-full min-h-0 overflow-y-auto">
+												<Table>
+													<TableHeader>
+														<TableRow>
+															<TableHead className="w-12">SHA</TableHead>
+															<TableHead>Summary</TableHead>
+															<TableHead>Author</TableHead>
+														</TableRow>
+													</TableHeader>
+													<TableBody>
+														{commits.map((commit) => (
+															<TableRow
+																key={commit.id}
+																onClick={() => loadCommitFiles(commit)}
+																className={cn(
+																	"cursor-pointer",
+																	selectedCommit?.id === commit.id && "bg-muted",
+																)}
+															>
+																<TableCell className="font-mono text-xs">
+																	{shortSha(commit.id)}
+																</TableCell>
+																<TableCell className="max-w-48 truncate">
+																	{commit.summary || "(no message)"}
+																</TableCell>
+																<TableCell className="text-xs text-muted-foreground">
+																	<div className="flex max-w-28 flex-col gap-1 truncate">
+																		<span>{commit.author}</span>
+																		<span>{formatDate(commit.time)}</span>
+																	</div>
+																</TableCell>
+															</TableRow>
+														))}
+													</TableBody>
+												</Table>
+											</ScrollArea>
+										)}
+									</TabsContent>
+								</Tabs>
 							</CardContent>
 						</Card>
 					</ResizablePanel>
@@ -624,59 +785,88 @@ function App() {
 					>
 						<Card className="h-full min-h-0">
 							<CardHeader>
-								<CardTitle className="text-sm">Changed files</CardTitle>
+								<CardTitle className="text-sm">
+									{activeCommitTab === "history"
+										? "Commit files"
+										: "Unstaged file"}
+								</CardTitle>
 								<CardDescription>
-									{selectedCommit
-										? `Commit ${shortSha(selectedCommit.id)} · ${selectedCommit.summary}`
-										: "Select a commit to list changed files"}
+									{activeCommitTab === "history"
+										? selectedCommit
+											? `Commit ${shortSha(selectedCommit.id)} · ${selectedCommit.summary}`
+											: "Select a commit to list changed files"
+										: selectedWorkingTreeFile
+											? `${selectedWorkingTreeFile.path} · ${selectedWorkingTreeFile.status}`
+											: "Select a file in Changes to inspect diff"}
 								</CardDescription>
 							</CardHeader>
 							<Separator />
-							<CardContent className="flex-1 min-h-0 overflow-hidden p-0">
-								{loading.files ? (
-									<div className="px-4 py-3 text-sm text-muted-foreground">
-										Loading changed files...
-									</div>
-								) : !selectedCommit ? (
-									<div className="px-4 py-3 text-sm text-muted-foreground">
-										No commit selected.
-									</div>
-								) : commitFiles.length === 0 ? (
-									<div className="px-4 py-3 text-sm text-muted-foreground">
-										This commit has no changed files.
-									</div>
+							<CardContent className="flex min-h-0 flex-1 overflow-hidden p-0">
+								{activeCommitTab === "history" ? (
+									<>
+										{commitFilesQuery.isError ? (
+											<div className="px-4 py-3 text-sm text-destructive">
+												<div className="mb-2">Failed to load changed files.</div>
+												<Button
+													size="sm"
+													variant="outline"
+													onClick={() => commitFilesQuery.refetch()}
+													disabled={commitFilesQuery.isFetching}
+												>
+													Retry
+												</Button>
+											</div>
+										) : commitFilesQuery.isFetching ? (
+											<div className="px-4 py-3 text-sm text-muted-foreground">
+												Loading changed files...
+											</div>
+										) : !selectedCommit ? (
+											<div className="px-4 py-3 text-sm text-muted-foreground">
+												No commit selected.
+											</div>
+										) : commitFiles.length === 0 ? (
+											<div className="px-4 py-3 text-sm text-muted-foreground">
+												This commit has no changed files.
+											</div>
+										) : (
+											<ScrollArea className="h-full min-h-0 overflow-y-auto">
+												<Table>
+													<TableHeader>
+														<TableRow>
+															<TableHead>File</TableHead>
+															<TableHead className="w-24">Status</TableHead>
+														</TableRow>
+													</TableHeader>
+													<TableBody>
+														{commitFiles.map((file) => (
+															<TableRow
+																key={file.path}
+																onClick={() => loadCommitFileDiff(file)}
+																className={cn(
+																	"cursor-pointer",
+																	selectedCommitFile?.path === file.path &&
+																		"bg-muted",
+																)}
+															>
+																<TableCell className="max-w-56 truncate text-sm">
+																	{file.path}
+																</TableCell>
+																<TableCell>
+																	<Badge variant={statusStyle(file.status)}>
+																		{file.status}
+																	</Badge>
+																</TableCell>
+															</TableRow>
+														))}
+													</TableBody>
+												</Table>
+											</ScrollArea>
+										)}
+									</>
 								) : (
-									<ScrollArea className="h-full min-h-0 overflow-y-auto">
-										<Table>
-											<TableHeader>
-												<TableRow>
-													<TableHead>File</TableHead>
-													<TableHead className="w-24">Status</TableHead>
-												</TableRow>
-											</TableHeader>
-											<TableBody>
-												{commitFiles.map((file) => (
-													<TableRow
-														key={file.path}
-														onClick={() => loadFileDiff(file)}
-														className={cn(
-															"cursor-pointer",
-															selectedFile?.path === file.path && "bg-muted",
-														)}
-													>
-														<TableCell className="max-w-56 truncate text-sm">
-															{file.path}
-														</TableCell>
-														<TableCell>
-															<Badge variant={statusStyle(file.status)}>
-																{file.status}
-															</Badge>
-														</TableCell>
-													</TableRow>
-												))}
-											</TableBody>
-										</Table>
-									</ScrollArea>
+									<div className="flex h-full items-center px-4 py-3 text-sm text-muted-foreground">
+										Select a file in Changes to inspect its diff on the right.
+									</div>
 								)}
 							</CardContent>
 						</Card>
@@ -693,24 +883,38 @@ function App() {
 							<CardHeader>
 								<CardTitle className="text-sm">Diff</CardTitle>
 								<CardDescription>
-									{selectedFile
-										? `${selectedFile.path}`
-										: selectedCommit
-											? "Select a file from the middle panel"
-											: "Select a commit first"}
+									{activeSelectedFile
+										? `${activeSelectedFile.path}`
+										: activeCommitTab === "history"
+											? selectedCommit
+												? "Select a file from the middle panel"
+												: "Select a commit first"
+											: "Select a working-tree file"}
 								</CardDescription>
 							</CardHeader>
 							<Separator />
 							<CardContent className="flex-1 min-h-0 overflow-hidden p-0">
 								<ScrollArea className="h-full min-h-0 overflow-y-auto">
-									{loading.diff ? (
+									{fileDiffIsError ? (
+										<div className="px-4 py-3 text-sm text-destructive">
+											<div className="mb-2">Failed to load file diff.</div>
+											<Button
+												size="sm"
+												variant="outline"
+												onClick={refetchFileDiff}
+												disabled={fileDiffIsLoading}
+											>
+												Retry
+											</Button>
+										</div>
+									) : fileDiffIsLoading ? (
 										<div className="px-4 py-3 text-sm text-muted-foreground">
 											Loading file diff...
 										</div>
-									) : !selectedFile ? (
-										<div className="px-4 py-3 text-sm text-muted-foreground">
-											No file selected.
-										</div>
+									) : !activeSelectedFile ? (
+									<div className="px-4 py-3 text-sm text-muted-foreground">
+										No file selected.
+									</div>
 									) : (
 										<pre className="min-h-full p-4 text-xs leading-6">
 											{diffLines.length === 0 ? (
